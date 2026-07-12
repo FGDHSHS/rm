@@ -1,4 +1,4 @@
-// bot.js - الكود الكامل مع التوكن
+// bot.js - الكود الكامل مع التوكن وحل مشكلة 409
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
 const { LowSync } = require('lowdb');
@@ -211,12 +211,41 @@ bot.on('text', async (ctx) => {
 });
 
 // ==========================================
-// 7. التشغيل
+// 7. التشغيل مع حل مشكلة 409
 // ==========================================
 resetAI().catch(() => {});
-bot.launch().then(() => {
-  console.log('✅ البوت يعمل...');
-});
 
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+// حذف أي Webhook متبقي وبدء التشغيل
+bot.telegram
+  .deleteWebhook({ drop_pending_updates: true })
+  .then(() => {
+    console.log('🔄 تم حذف Webhook السابق بنجاح');
+    bot.launch({
+      dropPendingUpdates: true, // تجاهل التحديثات المعلقة
+    }).then(() => {
+      console.log('✅ البوت يعمل الآن...');
+    }).catch((err) => {
+      console.error('❌ فشل تشغيل البوت:', err);
+    });
+  })
+  .catch((err) => {
+    console.error('❌ فشل حذف Webhook:', err);
+    // مع ذلك نحاول تشغيل البوت
+    bot.launch({
+      dropPendingUpdates: true,
+    }).then(() => {
+      console.log('✅ البوت يعمل الآن (بعد محاولة حذف Webhook فاشلة)...');
+    }).catch((err) => {
+      console.error('❌ فشل تشغيل البوت:', err);
+    });
+  });
+
+// إيقاف آمن
+process.once('SIGINT', () => {
+  bot.stop('SIGINT');
+  process.exit(0);
+});
+process.once('SIGTERM', () => {
+  bot.stop('SIGTERM');
+  process.exit(0);
+});
