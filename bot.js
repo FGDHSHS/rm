@@ -4,22 +4,21 @@ const sqlite3 = require('sqlite3').verbose();
 const { promisify } = require('util');
 require('dotenv').config();
 
-// ======== الإعدادات ========
+// ======== الإعدادات باستخدام المتغيرات الجديدة ========
 const BOT_TOKEN = process.env.b || 'YOUR_BOT_TOKEN_HERE';
 const BASE_URL = process.env.r || "https://dsfsdjfc-ddd.hf.space";
-const API_KEY = process.env.a|| "my_secret_key_123";
+const API_KEY = process.env.a || "my_secret_key_123";
 const BOT_USERNAME = 'kr_x20bot';
 
-// ======== إنشاء البوت ========
-const bot = new TelegramBot(BOT_TOKEN, { polling: true });
-console.log('🤖 البوت بدأ العمل...');
+// ======== إنشاء البوت (بدون بدء polling تلقائي) ========
+const bot = new TelegramBot(BOT_TOKEN, { polling: false });
+console.log('🤖 جاري تهيئة البوت...');
 
 // ======== قاعدة البيانات ========
 const db = new sqlite3.Database('./bot_data.db');
 const dbGet = promisify(db.get.bind(db));
 const dbRun = promisify(db.run.bind(db));
 
-// إنشاء الجداول
 async function initDB() {
     await dbRun(`
         CREATE TABLE IF NOT EXISTS users (
@@ -166,10 +165,8 @@ bot.on('message', async (msg) => {
 
     if (!text || text.startsWith('/')) return;
 
-    // التحقق من الجلسة
     const active = await isSessionActive(userId);
     if (!active) {
-        // غير مفعلة → نعرض زر البدء
         await bot.sendMessage(
             chatId,
             '👋 مرحباً! اضغط على الزر أدناه لبدء المحادثة مع الذكاء الاصطناعي.',
@@ -178,7 +175,6 @@ bot.on('message', async (msg) => {
         return;
     }
 
-    // الجلسة مفعلة → استهلاك نقطة
     const hasPoint = await usePoint(userId);
     if (!hasPoint) {
         await bot.sendMessage(
@@ -195,10 +191,9 @@ bot.on('message', async (msg) => {
         return;
     }
 
-    // إظهار "جاري الكتابة..."
-    bot.sendChatAction(chatId, 'typing');
+    // إظهار "جاري الكتابة..." (التأكيد)
+    await bot.sendChatAction(chatId, 'typing');
 
-    // إرسال إلى الذكاء الاصطناعي
     const reply = await sendMessageToAI(text);
     if (reply) {
         if (reply.length > 4096) {
@@ -211,7 +206,6 @@ bot.on('message', async (msg) => {
         await bot.sendMessage(chatId, '❌ عذراً، حدث خطأ. حاول مرة أخرى.');
     }
 
-    // عرض النقاط المتبقية (اختياري)
     const points = await getPoints(userId);
     await bot.sendMessage(
         chatId,
@@ -245,23 +239,19 @@ bot.on('callback_query', async (callbackQuery) => {
             return;
         }
 
-        // تفعيل الجلسة
         await setSessionActive(userId, true);
 
-        // إزالة الزر القديم
         await bot.editMessageReplyMarkup(
             { inline_keyboard: [] },
             { chat_id: chatId, message_id: callbackQuery.message.message_id }
         );
 
-        // رسالة الترحيب مع الأزرار
         await bot.sendMessage(
             chatId,
             `🤖 <b>بدأت المحادثة!</b>\n\nلديك ${points} نقطة متبقية.\nأرسل رسالتك الآن.`,
             { ...chatMenu(), parse_mode: 'HTML' }
         );
 
-        // إرسال البرومبت الأول (اختياري)
         await sendMessageToAI('شخصية خيالية تدعى 😈').catch(() => {});
     }
 
@@ -286,22 +276,17 @@ bot.onText(/\/start(?: ref_(\d+))?/, async (msg, match) => {
     const userId = msg.from.id;
     const referrerId = match[1] ? parseInt(match[1]) : null;
 
-    // معالجة الإحالة
     if (referrerId && referrerId !== userId) {
         const already = await hasReferral(referrerId, userId);
         if (!already) {
             const success = await recordReferral(referrerId, userId);
             if (success) {
-                // إشعار المُحيل
                 try {
                     await bot.sendMessage(
                         referrerId,
                         `🎉 حصلت على نقطة إضافية! المستخدم @${msg.from.username || userId} دخل عبر رابطك.`
                     );
-                } catch (e) {
-                    console.warn(`⚠️ لم نتمكن من إرسال إشعار للمُحيل ${referrerId}`);
-                }
-                // إشعار المستخدم الجديد
+                } catch (e) {}
                 await bot.sendMessage(
                     chatId,
                     `🎁 تم منح نقطة لصديقك (@${msg.from.username || userId}) شكراً لدخولك عبر الرابط.`
@@ -314,7 +299,6 @@ bot.onText(/\/start(?: ref_(\d+))?/, async (msg, match) => {
         }
     }
 
-    // عرض القائمة الرئيسية
     const points = await getPoints(userId);
     await bot.sendMessage(
         chatId,
@@ -351,9 +335,29 @@ bot.onText(/\/help/, async (msg) => {
     );
 });
 
-// ======== معالجة أخطاء الـ Polling ========
+// ======== بدء Polling مع إعادة المحاولة عند 409 ========
+function startBot() {
+    bot.startPolling({
+        params: { timeout: 30 }
+    }).then(() => {
+        console.log('✅ البوت جاهز تماماً.');
+    }).catch((err) => {
+        if (err.message && err.message.includes('409')) {
+            console.warn('⚠️ تعارض في polling (409)، سنحاول مرة أخرى بعد 5 ثوان...');
+            setTimeout(startBot, 5000);
+        } else {
+            console.error('❌ فشل بدء polling:', err.message);
+        }
+    });
+}
+
+startBot();
+
+// معالجة أخطاء الـ polling العامة
 bot.on('polling_error', (error) => {
     console.error('❌ Polling error:', error.message);
+    if (error.message && error.message.includes('409')) {
+        console.warn('⚠️ تعارض، سنعيد المحاولة...');
+        setTimeout(startBot, 5000);
+    }
 });
-
-console.log('✅ البوت جاهز تماماً.');
