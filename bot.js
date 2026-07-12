@@ -2,19 +2,22 @@ const TelegramBot = require('node-telegram-bot-api');
 const fetch = require('node-fetch');
 require('dotenv').config();
 
-// إعدادات البوت
+// ======== إعدادات البوت ========
 const BOT_TOKEN = process.env.b || 'YOUR_BOT_TOKEN_HERE';
 const BASE_URL = process.env.r || "https://dsfsdjfc-ddd.hf.space";
 const API_KEY = process.env.a|| "my_secret_key_123";
-
-// إنشاء البوت
+// ======== إنشاء البوت ========
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
-// تخزين حالة المحادثة لكل مستخدم
+console.log('🤖 البوت بدأ بالعمل...');
+
+// ======== تخزين جلسات المستخدمين ========
 const userSessions = new Map();
 
-// دالة إرسال رسالة للـ API
-async function sendMessage(message, userId) {
+// ======== دوال الاتصال بـ API ========
+
+// إرسال رسالة إلى الذكاء الاصطناعي
+async function sendMessageToAI(message) {
     try {
         const response = await fetch(`${BASE_URL}/chat`, {
             method: 'POST',
@@ -22,114 +25,123 @@ async function sendMessage(message, userId) {
                 'Content-Type': 'application/json',
                 'X-API-Key': API_KEY
             },
-            body: JSON.stringify({ 
-                message: message,
-                user_id: userId // لإدارة الجلسات
-            })
+            body: JSON.stringify({ message }) // فقط الرسالة بدون user_id
         });
 
         if (response.ok) {
             const data = await response.json();
             return data.reply || '';
         } else {
-            const error = await response.json();
-            console.error(`❌ خطأ ${response.status}: ${error.error || 'خطأ غير معروف'}`);
+            const errorText = await response.text();
+            console.error(`❌ خطأ من الـ API: ${response.status} - ${errorText}`);
             return null;
         }
     } catch (error) {
-        console.error(`❌ فشل الاتصال: ${error.message}`);
+        console.error(`❌ فشل الاتصال بالـ API: ${error.message}`);
         return null;
     }
 }
 
-// دالة إعادة تعيين المحادثة
-async function resetConversation(userId) {
+// إعادة تعيين المحادثة
+async function resetConversation() {
     try {
         const response = await fetch(`${BASE_URL}/reset`, {
             method: 'POST',
             headers: {
                 'X-API-Key': API_KEY
-            },
-            body: JSON.stringify({ user_id: userId })
+            }
         });
-
         if (response.ok) {
-            console.log(`✅ تم إعادة تعيين المحادثة للمستخدم ${userId}`);
+            console.log('✅ تم إعادة تعيين المحادثة');
             return true;
         } else {
-            const error = await response.json();
-            console.error(`❌ فشل إعادة التعيين: ${error.error || 'خطأ غير معروف'}`);
+            console.error(`❌ فشل إعادة التعيين: ${response.status}`);
             return false;
         }
     } catch (error) {
-        console.error(`❌ فشل الاتصال: ${error.message}`);
+        console.error(`❌ فشل إعادة التعيين: ${error.message}`);
         return false;
     }
 }
 
-// أمر /start - يظهر الزر الشفاف
+// ======== أمر /start ========
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
-    
-    // إعادة تعيين المحادثة للمستخدم
-    await resetConversation(userId);
-    
-    // إرسال البرومبت الأول
-    await sendMessage('شخصية خيالية تدعى 😈', userId);
-    
-    // إنشاء زر شفاف (Inline Keyboard)
-    const options = {
-        reply_markup: {
-            inline_keyboard: [
-                [
-                    {
-                        text: '💬 التحدث مع الذكاء الاصطناعي',
-                        callback_data: 'start_chat'
-                    }
+
+    console.log(`📩 مستخدم جديد: ${userId} (${msg.from.username || 'بدون اسم'})`);
+
+    try {
+        // 1. إعادة تعيين المحادثة (حتى لو فشلت لا تؤثر على ظهور الزر)
+        await resetConversation().catch(err => console.warn('⚠️ فشل إعادة التعيين:', err));
+
+        // 2. إرسال البرومبت الأول (نحاول، لكن لا ننتظر النتيجة)
+        sendMessageToAI('شخصية خيالية تدعى 😈')
+            .then(reply => console.log(`✅ تم إرسال البرومبت، الرد: ${reply ? 'تم الاستلام' : 'فارغ'}`))
+            .catch(err => console.warn('⚠️ فشل إرسال البرومبت:', err));
+
+        // 3. إنشاء الزر الشفاف (Inline Keyboard)
+        const options = {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        {
+                            text: '💬 التحدث مع الذكاء الاصطناعي',
+                            callback_data: 'start_chat'
+                        }
+                    ]
                 ]
-            ]
-        },
-        parse_mode: 'HTML'
-    };
-    
-    // رسالة الترحيب
-    const welcomeMessage = `
+            },
+            parse_mode: 'HTML'
+        };
+
+        // 4. رسالة الترحيب
+        const welcomeMessage = `
 👋 <b>مرحباً بك في بوت الذكاء الاصطناعي!</b>
 
 ✨ أنا هنا لمساعدتك والتحدث معك في أي موضوع.
 🔮 فقط اضغط على الزر أدناه لبدء المحادثة.
 
 <i>💡 ملاحظة: البوت يتعلم من محادثاتك ويطور نفسه!</i>
-    `;
-    
-    await bot.sendMessage(chatId, welcomeMessage, options);
+        `;
+
+        // 5. إرسال الرسالة مع الزر
+        await bot.sendMessage(chatId, welcomeMessage, options);
+        console.log(`✅ تم إرسال رسالة /start للمستخدم ${userId}`);
+
+    } catch (error) {
+        console.error(`❌ خطأ في /start للمستخدم ${userId}:`, error);
+        await bot.sendMessage(chatId, '❌ حدث خطأ. حاول مرة أخرى لاحقاً.');
+    }
 });
 
-// معالجة الضغط على الزر
+// ======== معالجة الضغط على الزر ========
 bot.on('callback_query', async (callbackQuery) => {
     const chatId = callbackQuery.message.chat.id;
     const userId = callbackQuery.from.id;
     const data = callbackQuery.data;
-    
+
     if (data === 'start_chat') {
-        // إظهار رسالة تأكيد
-        await bot.answerCallbackQuery(callbackQuery.id, {
-            text: '✅ تم بدء المحادثة! أرسل رسالتك الآن.',
-            show_alert: false
-        });
-        
-        // حذف الزر بعد الضغط عليه (اختياري)
-        await bot.editMessageReplyMarkup(
-            { inline_keyboard: [] },
-            {
-                chat_id: chatId,
-                message_id: callbackQuery.message.message_id
-            }
-        );
-        
-        // إرسال رسالة ترحيب للمحادثة
-        const chatMessage = `
+        console.log(`🔘 المستخدم ${userId} ضغط على زر بدء المحادثة`);
+
+        try {
+            // إظهار رسالة تأكيد
+            await bot.answerCallbackQuery(callbackQuery.id, {
+                text: '✅ تم بدء المحادثة! أرسل رسالتك الآن.',
+                show_alert: false
+            });
+
+            // إزالة الزر (اختياري)
+            await bot.editMessageReplyMarkup(
+                { inline_keyboard: [] },
+                {
+                    chat_id: chatId,
+                    message_id: callbackQuery.message.message_id
+                }
+            );
+
+            // رسالة ترحيب المحادثة
+            const chatMessage = `
 🤖 <b>أهلاً بك في المحادثة!</b>
 
 💭 يمكنك الآن التحدث معي بحرية.
@@ -137,24 +149,32 @@ bot.on('callback_query', async (callbackQuery) => {
 
 🔄 لإعادة تعيين المحادثة أرسل /reset
 ❌ لإنهاء المحادثة أرسل /end
-        `;
-        
-        await bot.sendMessage(chatId, chatMessage, { parse_mode: 'HTML' });
-        
-        // تفعيل جلسة المحادثة للمستخدم
-        userSessions.set(userId, { active: true, startTime: Date.now() });
+            `;
+
+            await bot.sendMessage(chatId, chatMessage, { parse_mode: 'HTML' });
+
+            // تفعيل الجلسة
+            userSessions.set(userId, { active: true, startTime: Date.now() });
+            console.log(`✅ تم تفعيل جلسة المستخدم ${userId}`);
+
+        } catch (error) {
+            console.error(`❌ خطأ في معالجة الضغط على الزر:`, error);
+            await bot.sendMessage(chatId, '❌ حدث خطأ. حاول مرة أخرى.');
+        }
     }
 });
 
-// التعامل مع رسائل المستخدمين
+// ======== استقبال الرسائل النصية ========
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
     const userMessage = msg.text;
-    
-    // تجاهل الأوامر
+
+    // تجاهل الأوامر والرسائل غير النصية
     if (!userMessage || userMessage.startsWith('/')) return;
-    
+
+    console.log(`💬 رسالة من ${userId}: "${userMessage.substring(0, 50)}..."`);
+
     // التحقق من أن المحادثة مفعلة
     const session = userSessions.get(userId);
     if (!session || !session.active) {
@@ -163,16 +183,17 @@ bot.on('message', async (msg) => {
             '⚠️ <b>يرجى بدء المحادثة أولاً!</b>\n\nأرسل /start ثم اضغط على زر "التحدث مع الذكاء الاصطناعي"',
             { parse_mode: 'HTML' }
         );
+        console.log(`⛔ المستخدم ${userId} حاول الإرسال دون تفعيل الجلسة`);
         return;
     }
-    
-    // إرسال رسالة "جاري الكتابة..."
+
+    // إرسال إشارة "جاري الكتابة..."
     bot.sendChatAction(chatId, 'typing');
-    
-    const reply = await sendMessage(userMessage, userId);
-    
+
+    const reply = await sendMessageToAI(userMessage);
+
     if (reply) {
-        // تقسيم الرد إذا كان طويلاً
+        // تقسيم الرد الطويل
         if (reply.length > 4096) {
             const parts = reply.match(/.{1,4096}/g);
             for (const part of parts) {
@@ -181,51 +202,54 @@ bot.on('message', async (msg) => {
         } else {
             await bot.sendMessage(chatId, reply);
         }
+        console.log(`✅ تم إرسال الرد للمستخدم ${userId}`);
     } else {
         await bot.sendMessage(
             chatId,
             '❌ عذراً، حدث خطأ. حاول مرة أخرى أو أرسل /reset لإعادة تعيين المحادثة.'
         );
+        console.log(`❌ فشل الحصول على رد للمستخدم ${userId}`);
     }
 });
 
-// أمر /reset لإعادة تعيين المحادثة
+// ======== أوامر إضافية ========
+
+// /reset
 bot.onText(/\/reset/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
-    
-    const success = await resetConversation(userId);
+
+    const success = await resetConversation();
     if (success) {
         await bot.sendMessage(
             chatId,
             '🔄 <b>تم إعادة تعيين المحادثة بنجاح!</b>\n\nيمكنك الآن بدء محادثة جديدة.',
             { parse_mode: 'HTML' }
         );
+        console.log(`🔄 تم إعادة تعيين جلسة المستخدم ${userId}`);
     } else {
-        await bot.sendMessage(
-            chatId,
-            '❌ فشل إعادة تعيين المحادثة. حاول مرة أخرى.'
-        );
+        await bot.sendMessage(chatId, '❌ فشل إعادة تعيين المحادثة. حاول مرة أخرى.');
     }
 });
 
-// أمر /end لإنهاء المحادثة
+// /end
 bot.onText(/\/end/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
-    
+
     userSessions.delete(userId);
     await bot.sendMessage(
         chatId,
         '👋 <b>تم إنهاء المحادثة!</b>\n\nلبدء محادثة جديدة أرسل /start',
         { parse_mode: 'HTML' }
     );
+    console.log(`🚪 المستخدم ${userId} أنهى المحادثة`);
 });
 
-// أمر /help
+// /help
 bot.onText(/\/help/, async (msg) => {
     const chatId = msg.chat.id;
-    
+
     const helpMessage = `
 📖 <b>قائمة الأوامر:</b>
 
@@ -239,9 +263,13 @@ bot.onText(/\/help/, async (msg) => {
 2. اضغط على زر "التحدث مع الذكاء الاصطناعي"
 3. ابدأ بالكتابة! 🚀
     `;
-    
+
     await bot.sendMessage(chatId, helpMessage, { parse_mode: 'HTML' });
 });
 
-console.log('🤖 البوت يعمل...');
-console.log('✅ جاهز لاستقبال الرسائل');
+// ======== معالجة الأخطاء العامة ========
+bot.on('polling_error', (error) => {
+    console.error('❌ خطأ في polling:', error.message);
+});
+
+console.log('✅ البوت جاهز لاستقبال الرسائل.');
