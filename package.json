@@ -1,7 +1,7 @@
 {
   "name": "telegram-ai-bot",
   "version": "1.0.0",
-  "description": "بوت تليجرام مع نظام نقاط وإحالات",
+  "description": "بوت تليجرام مع نظام نقاط وإحالات ومحادثة مع ذكاء اصطناعي",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
