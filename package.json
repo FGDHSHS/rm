@@ -1,7 +1,7 @@
 {
   "name": "telegram-ai-bot",
   "version": "1.0.0",
-  "description": "بوت تليجرام يعمل بالذكاء الاصطناعي",
+  "description": "بوت تليجرام مع نظام نقاط وإحالات",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
@@ -10,17 +10,10 @@
   "dependencies": {
     "node-telegram-bot-api": "^0.64.0",
     "node-fetch": "^2.7.0",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "sqlite3": "^5.1.7"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"
-  },
-  "keywords": [
-    "telegram",
-    "bot",
-    "ai",
-    "chatbot"
-  ],
-  "author": "Your Name",
-  "license": "MIT"
+  }
 }
