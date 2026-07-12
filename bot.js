@@ -1,7 +1,8 @@
 // bot.js - الكود الكامل مع التوكن
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
-const { LowSync, JSONFileSync } = require('lowdb');
+const { LowSync } = require('lowdb');
+const { JSONFileSync } = require('lowdb/node');
 const path = require('path');
 
 // ==========================================
