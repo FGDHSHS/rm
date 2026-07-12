@@ -1,11 +1,11 @@
-// استيراد المكتبات
+// bot.js - الكود الكامل مع التوكن
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
 const { LowSync, JSONFileSync } = require('lowdb');
 const path = require('path');
 
 // ==========================================
-// 1. إعداد قاعدة البيانات (LowDB)
+// 1. قاعدة البيانات
 // ==========================================
 const dbFile = path.join(__dirname, 'db.json');
 const adapter = new JSONFileSync(dbFile);
@@ -21,10 +21,10 @@ function getUser(userId) {
   const id = String(userId);
   if (!db.data.users[id]) {
     db.data.users[id] = {
-      points: 7,                // 7 نقاط مجانية
+      points: 7,
       isActive: false,
       referredBy: null,
-      referredUsers: [],        // قائمة بمن قام بدعوتهم
+      referredUsers: [],
     };
     db.write();
   }
@@ -37,13 +37,13 @@ function saveUser(userId, data) {
 }
 
 // ==========================================
-// 2. إعداد البوت (مع التوكن المقدم)
+// 2. البوت
 // ==========================================
-const BOT_TOKEN = '7801607857:AAGMzMe7ioctkDQJxxAVydtsUzf0ZXtiBxI'; // ضع توكنك هنا
+const BOT_TOKEN = '7801607857:AAGMzMe7ioctkDQJxxAVydtsUzf0ZXtiBxI';
 const bot = new Telegraf(BOT_TOKEN);
 
 // ==========================================
-// 3. إعداد الذكاء الاصطناعي (API)
+// 3. الذكاء الاصطناعي
 // ==========================================
 const AI_BASE_URL = 'https://dsfsdjfc-ddd.hf.space';
 const AI_API_KEY = 'my_secret_key_123';
@@ -54,10 +54,7 @@ async function sendToAI(message) {
       `${AI_BASE_URL}/chat`,
       { message },
       {
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': AI_API_KEY,
-        },
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': AI_API_KEY },
         timeout: 30000,
       }
     );
@@ -77,48 +74,40 @@ async function resetAI() {
 }
 
 // ==========================================
-// 4. دوال الإحالة (باستخدام @kr_x20bot)
+// 4. الإحالات
 // ==========================================
 function getReferralLink(userId) {
-  // نستخدم اسم البوت الثابت كما هو مطلوب
   return `https://t.me/kr_x20bot?start=ref_${userId}`;
 }
 
 // ==========================================
-// 5. أمر /start
+// 5. الأوامر والأزرار
 // ==========================================
 bot.start(async (ctx) => {
   const userId = ctx.from.id;
-  const payload = ctx.startPayload; // مثلاً ref_123456
+  const payload = ctx.startPayload;
 
   // معالجة الإحالة
   if (payload && payload.startsWith('ref_')) {
     const referrerId = payload.replace('ref_', '');
     if (referrerId !== String(userId)) {
-      // التحقق من أن المستخدم جديد (لم يسبق له الدخول)
       const isNewUser = !db.data.users[String(userId)];
       if (isNewUser) {
         const referrerData = getUser(referrerId);
         if (referrerData && !referrerData.referredUsers.includes(String(userId))) {
-          // إضافة نقطة للداعي
           referrerData.points += 1;
           referrerData.referredUsers.push(String(userId));
           saveUser(referrerId, referrerData);
-
-          // إشعار للداعي
           try {
             await bot.telegram.sendMessage(
               referrerId,
               '🎉 لقد دخل مستخدم جديد عبر رابطك، وتمت إضافة نقطة واحدة إلى رصيدك.'
             );
           } catch (e) {}
-
-          // إشعار للمستخدم الجديد
           try {
             await ctx.reply('✅ تم تسجيلك عبر رابط صديقك، وقد حصل صديقك على نقطة مكافأة.');
           } catch (e) {}
         }
-        // تسجيل أن هذا المستخدم تمت إحالته
         const newUser = getUser(userId);
         newUser.referredBy = referrerId;
         saveUser(userId, newUser);
@@ -126,10 +115,7 @@ bot.start(async (ctx) => {
     }
   }
 
-  // الآن ننشئ المستخدم (إن لم يكن موجوداً) ونعطيه 7 نقاط
   const userData = getUser(userId);
-
-  // عرض الترحيب مع زر التفعيل
   await ctx.reply(
     `👋 مرحباً بك في البوت!\nيمكنك التحدث مع الذكاء الاصطناعي بعد الضغط على الزر أدناه.`,
     Markup.inlineKeyboard([
@@ -138,9 +124,6 @@ bot.start(async (ctx) => {
   );
 });
 
-// ==========================================
-// 6. زر تفعيل المحادثة
-// ==========================================
 bot.action('activate_chat', async (ctx) => {
   const userId = ctx.from.id;
   const userData = getUser(userId);
@@ -159,9 +142,6 @@ bot.action('activate_chat', async (ctx) => {
   );
 });
 
-// ==========================================
-// 7. أزرار النقاط والإحالة
-// ==========================================
 bot.action('show_points', async (ctx) => {
   const userId = ctx.from.id;
   const userData = getUser(userId);
@@ -179,7 +159,7 @@ bot.action('collect_points', async (ctx) => {
 });
 
 // ==========================================
-// 8. معالجة الرسائل النصية (المحادثة)
+// 6. معالجة الرسائل
 // ==========================================
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
@@ -195,7 +175,6 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // التحقق من النقاط
   if (userData.points <= 0) {
     await ctx.reply(
       '⚠️ رصيد النقاط لديك 0، لا يمكنك إرسال رسائل.\nاستخدم زر "جمع نقاط" للحصول على نقاط جديدة.',
@@ -206,25 +185,19 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // خصم نقطة
   userData.points -= 1;
   saveUser(userId, userData);
 
-  // إظهار مؤشر الكتابة
   await ctx.sendChatAction('typing');
-
-  // إرسال إلى الذكاء الاصطناعي
   const aiReply = await sendToAI(ctx.message.text);
 
   if (aiReply === null) {
-    // في حال الخطأ نعيد النقطة
     userData.points += 1;
     saveUser(userId, userData);
     await ctx.reply('❌ حدث خطأ في الاتصال بالذكاء الاصطناعي، حاول مجدداً.');
     return;
   }
 
-  // إرسال الرد مع الأزرار المحدثة
   await ctx.reply(
     aiReply,
     Markup.inlineKeyboard([
@@ -237,13 +210,12 @@ bot.on('text', async (ctx) => {
 });
 
 // ==========================================
-// 9. تشغيل البوت
+// 7. التشغيل
 // ==========================================
 resetAI().catch(() => {});
 bot.launch().then(() => {
   console.log('✅ البوت يعمل...');
 });
 
-// إيقاف آمن
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
