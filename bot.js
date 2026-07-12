@@ -1,363 +1,182 @@
-const TelegramBot = require('node-telegram-bot-api');
-const fetch = require('node-fetch');
-const sqlite3 = require('sqlite3').verbose();
-const { promisify } = require('util');
 require('dotenv').config();
+const { Telegraf, Markup } = require('telegraf');
+const Database = require('better-sqlite3');
+const axios = require('axios');
 
-// ======== الإعدادات باستخدام المتغيرات الجديدة ========
+// ===================== إعدادات البوت والذكاء الاصطناعي =====================
 const BOT_TOKEN = process.env.b || 'YOUR_BOT_TOKEN_HERE';
-const BASE_URL = process.env.r || "https://dsfsdjfc-ddd.hf.space";
-const API_KEY = process.env.a || "my_secret_key_123";
-const BOT_USERNAME = 'kr_x20bot';
+const AI_BASE_URL = process.env.r || "https://dsfsdjfc-ddd.hf.space";
+const AI_API_KEY = process.env.a || "my_secret_key_123";
 
-// ======== إنشاء البوت (بدون بدء polling تلقائي) ========
-const bot = new TelegramBot(BOT_TOKEN, { polling: false });
-console.log('🤖 جاري تهيئة البوت...');
+const bot = new Telegraf(BOT_TOKEN);
 
-// ======== قاعدة البيانات ========
-const db = new sqlite3.Database('./bot_data.db');
-const dbGet = promisify(db.get.bind(db));
-const dbRun = promisify(db.run.bind(db));
+// ===================== قاعدة البيانات =====================
+const db = new Database('bot_data.db');
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    points INTEGER DEFAULT 7,
+    referred_by INTEGER,
+    joined_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS referrals (
+    referrer_id INTEGER,
+    referred_user_id INTEGER UNIQUE,
+    claimed BOOLEAN DEFAULT 0,
+    PRIMARY KEY (referrer_id, referred_user_id)
+  );
+`);
 
-async function initDB() {
-    await dbRun(`
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            points INTEGER DEFAULT 7,
-            session_active INTEGER DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    `);
-    await dbRun(`
-        CREATE TABLE IF NOT EXISTS referrals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            referrer_id INTEGER,
-            referee_id INTEGER,
-            used_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(referrer_id, referee_id)
-        )
-    `);
-    console.log('✅ قاعدة البيانات جاهزة');
-}
-initDB().catch(console.error);
+// دوال قاعدة البيانات المساعدة
+const getUser = (userId) => db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
+const createUser = (userId, referredBy = null) => {
+  db.prepare('INSERT OR IGNORE INTO users (user_id, points, referred_by) VALUES (?, 7, ?)').run(userId, referredBy);
+  return getUser(userId);
+};
+const updatePoints = (userId, delta) => {
+  db.prepare('UPDATE users SET points = points + ? WHERE user_id = ?').run(delta, userId);
+};
+const claimReferral = (referrerId, referredUserId) => {
+  const exists = db.prepare('SELECT * FROM referrals WHERE referrer_id = ? AND referred_user_id = ?').get(referrerId, referredUserId);
+  if (exists) return false;
+  db.prepare('INSERT INTO referrals (referrer_id, referred_user_id, claimed) VALUES (?, ?, 1)').run(referrerId, referredUserId);
+  return true;
+};
 
-// ======== دوال النقاط والجلسات ========
-async function getPoints(userId) {
-    let row = await dbGet(`SELECT points FROM users WHERE user_id = ?`, userId);
-    if (!row) {
-        await dbRun(`INSERT INTO users (user_id, points) VALUES (?, 7)`, userId);
-        row = { points: 7 };
+// ===================== أوامر البوت =====================
+
+// الأمر /start
+bot.start(async (ctx) => {
+  const userId = ctx.from.id;
+  const startPayload = ctx.startPayload; // قد يحتوي على كود الإحالة
+
+  let user = getUser(userId);
+  let referredBy = null;
+
+  // تحليل معامل الإحالة (ref_<user_id>)
+  if (startPayload && startPayload.startsWith('ref_')) {
+    const refId = parseInt(startPayload.replace('ref_', ''));
+    if (refId && refId !== userId) {
+      referredBy = refId;
     }
-    return row.points;
-}
+  }
 
-async function updatePoints(userId, delta) {
-    const current = await getPoints(userId);
-    const newPoints = Math.max(0, current + delta);
-    await dbRun(`UPDATE users SET points = ? WHERE user_id = ?`, newPoints, userId);
-    return newPoints;
-}
+  if (!user) {
+    // مستخدم جديد
+    user = createUser(userId, referredBy);
 
-async function usePoint(userId) {
-    const current = await getPoints(userId);
-    if (current <= 0) return false;
-    await updatePoints(userId, -1);
-    return true;
-}
-
-async function setSessionActive(userId, active) {
-    await dbRun(`UPDATE users SET session_active = ? WHERE user_id = ?`, active ? 1 : 0, userId);
-}
-
-async function isSessionActive(userId) {
-    const row = await dbGet(`SELECT session_active FROM users WHERE user_id = ?`, userId);
-    return row ? row.session_active === 1 : false;
-}
-
-async function recordReferral(referrerId, refereeId) {
-    if (referrerId === refereeId) return false;
-    try {
-        await dbRun(
-            `INSERT INTO referrals (referrer_id, referee_id) VALUES (?, ?)`,
-            referrerId, refereeId
-        );
-        await updatePoints(referrerId, 1);
-        return true;
-    } catch (err) {
-        if (err.message.includes('UNIQUE')) return false;
-        throw err;
+    // معالجة الإحالة إذا وجدت
+    if (referredBy && claimReferral(referredBy, userId)) {
+      // إضافة نقطة للمُحيل
+      updatePoints(referredBy, 1);
+      // إشعار المُحيل
+      try {
+        await bot.telegram.sendMessage(referredBy, '🎉 لقد دخل مستخدم جديد عبر رابطك، وتمت إضافة نقطة واحدة إلى رصيدك.');
+      } catch (e) {
+        // ربما المستخدم لم يبدأ البوت بعد أو حظر البوت
+      }
+      // رسالة ترحيب للمستخدم الجديد
+      await ctx.reply('تم تسجيلك عبر رابط صديقك، وقد حصل صديقك على نقطة مكافأة.');
     }
-}
+  } else {
+    // مستخدم عائد - لا شيء خاص
+  }
 
-async function hasReferral(referrerId, refereeId) {
-    const row = await dbGet(
-        `SELECT id FROM referrals WHERE referrer_id = ? AND referee_id = ?`,
-        referrerId, refereeId
+  // زر بدء المحادثة
+  const startButton = Markup.inlineKeyboard([
+    Markup.button.callback('التحدث مع الذكاء الاصطناعي', 'activate_chat')
+  ]);
+
+  await ctx.reply('مرحباً! اضغط على الزر أدناه لبدء التحدث مع الذكاء الاصطناعي.', startButton);
+});
+
+// تفعيل وضع المحادثة (زر "التحدث مع الذكاء الاصطناعي")
+bot.action('activate_chat', async (ctx) => {
+  const userId = ctx.from.id;
+  let user = getUser(userId);
+  if (!user) {
+    user = createUser(userId);
+  }
+
+  // إعداد أزرار المحادثة
+  const chatButtons = Markup.inlineKeyboard([
+    [Markup.button.callback(`النقاط: ${user.points}`, 'show_points')],
+    [Markup.button.callback('جمع نقاط', 'collect_points')]
+  ]);
+
+  await ctx.editMessageReplyMarkup(chatButtons.reply_markup).catch(() => {});
+  await ctx.reply('تم تفعيل وضع المحادثة. الآن يمكنك إرسال أي رسالة مباشرة إلى الذكاء الاصطناعي. (كل رسالة تستهلك نقطة)');
+});
+
+// زر عرض النقاط (فقط يعرض العدد)
+bot.action('show_points', async (ctx) => {
+  const userId = ctx.from.id;
+  const user = getUser(userId);
+  await ctx.answerCbQuery(`رصيدك الحالي: ${user ? user.points : 0} نقطة.`);
+});
+
+// زر جمع نقاط - يرسل رابط الإحالة
+bot.action('collect_points', async (ctx) => {
+  const userId = ctx.from.id;
+  const user = getUser(userId) || createUser(userId);
+  const referralLink = `https://t.me/kr_x20bot?start=ref_${userId}`;
+  await ctx.reply(`🔗 رابط الإحالة الخاص بك:\n${referralLink}\n\nشاركه مع أصدقائك، وعند دخولهم لأول مرة ستحصل على نقطة واحدة لكل صديق.`);
+});
+
+// ===================== معالجة الرسائل النصية (المحادثة مع AI) =====================
+bot.on('text', async (ctx) => {
+  const userId = ctx.from.id;
+  const messageText = ctx.message.text;
+
+  // تجاهل الأوامر (مثل /start)
+  if (messageText.startsWith('/')) return;
+
+  const user = getUser(userId);
+  if (!user || user.points < 1) {
+    // لا نقاط كافية
+    const collectButton = Markup.inlineKeyboard([
+      Markup.button.callback('جمع نقاط', 'collect_points')
+    ]);
+    return ctx.reply('⚠️ رصيدك من النقاط غير كافٍ. يمكنك جمع نقاط عبر الإحالات.', collectButton);
+  }
+
+  // إظهار مؤشر "جاري الكتابة..."
+  await ctx.sendChatAction('typing');
+
+  // خصم نقطة
+  updatePoints(userId, -1);
+
+  try {
+    // استدعاء واجهة الذكاء الاصطناعي
+    const response = await axios.post(
+      `${AI_BASE_URL}/chat`,
+      { message: messageText },
+      { headers: { 'Content-Type': 'application/json', 'X-API-Key': AI_API_KEY } }
     );
-    return !!row;
-}
 
-// ======== دوال API ========
-async function sendMessageToAI(message) {
-    try {
-        const response = await fetch(`${BASE_URL}/chat`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-API-Key': API_KEY
-            },
-            body: JSON.stringify({ message })
-        });
-        if (response.ok) {
-            const data = await response.json();
-            return data.reply || '';
-        }
-        console.error(`❌ API error: ${response.status}`);
-        return null;
-    } catch (error) {
-        console.error(`❌ Fetch error: ${error.message}`);
-        return null;
-    }
-}
+    const reply = response.data?.reply || 'عذراً، لم أستطع الرد. حاول مرة أخرى.';
 
-async function resetConversation() {
-    try {
-        await fetch(`${BASE_URL}/reset`, {
-            method: 'POST',
-            headers: { 'X-API-Key': API_KEY }
-        });
-        return true;
-    } catch (error) {
-        console.error(`❌ Reset error: ${error.message}`);
-        return false;
-    }
-}
+    // تحديث أزرار المحادثة (تظهر بعد كل رد)
+    const updatedUser = getUser(userId);
+    const chatButtons = Markup.inlineKeyboard([
+      [Markup.button.callback(`النقاط: ${updatedUser.points}`, 'show_points')],
+      [Markup.button.callback('جمع نقاط', 'collect_points')]
+    ]);
 
-// ======== أزرار ========
-function mainMenu() {
-    return {
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: '💬 التحدث مع الذكاء الاصطناعي', callback_data: 'start_chat' }]
-            ]
-        }
-    };
-}
-
-function chatMenu() {
-    return {
-        reply_markup: {
-            inline_keyboard: [
-                [
-                    { text: '🔢 نقاطي', callback_data: 'show_points' },
-                    { text: '🎁 جمع نقاط', callback_data: 'get_referral_link' }
-                ]
-            ]
-        }
-    };
-}
-
-// ======== معالجة الرسائل النصية ========
-bot.on('message', async (msg) => {
-    const chatId = msg.chat.id;
-    const userId = msg.from.id;
-    const text = msg.text;
-
-    if (!text || text.startsWith('/')) return;
-
-    const active = await isSessionActive(userId);
-    if (!active) {
-        await bot.sendMessage(
-            chatId,
-            '👋 مرحباً! اضغط على الزر أدناه لبدء المحادثة مع الذكاء الاصطناعي.',
-            mainMenu()
-        );
-        return;
-    }
-
-    const hasPoint = await usePoint(userId);
-    if (!hasPoint) {
-        await bot.sendMessage(
-            chatId,
-            '⚠️ نفدت نقاطك! اضغط على زر "جمع نقاط" للحصول على نقاط إضافية.',
-            {
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: '🎁 جمع نقاط', callback_data: 'get_referral_link' }]
-                    ]
-                }
-            }
-        );
-        return;
-    }
-
-    // إظهار "جاري الكتابة..." (التأكيد)
-    await bot.sendChatAction(chatId, 'typing');
-
-    const reply = await sendMessageToAI(text);
-    if (reply) {
-        if (reply.length > 4096) {
-            const parts = reply.match(/.{1,4096}/g);
-            for (const part of parts) await bot.sendMessage(chatId, part);
-        } else {
-            await bot.sendMessage(chatId, reply);
-        }
-    } else {
-        await bot.sendMessage(chatId, '❌ عذراً، حدث خطأ. حاول مرة أخرى.');
-    }
-
-    const points = await getPoints(userId);
-    await bot.sendMessage(
-        chatId,
-        `📊 نقاطك المتبقية: ${points}`,
-        chatMenu()
-    );
+    await ctx.reply(reply, chatButtons);
+  } catch (error) {
+    // استرجاع النقطة إذا فشل الرد
+    updatePoints(userId, 1);
+    console.error('خطأ في الاتصال بالذكاء الاصطناعي:', error.message);
+    await ctx.reply('❌ حدث خطأ أثناء معالجة رسالتك. تم استرجاع النقطة. حاول لاحقاً.');
+  }
 });
 
-// ======== معالجة الأزرار ========
-bot.on('callback_query', async (callbackQuery) => {
-    const chatId = callbackQuery.message.chat.id;
-    const userId = callbackQuery.from.id;
-    const data = callbackQuery.data;
+// ===================== تشغيل البوت =====================
+bot.launch()
+  .then(() => console.log('✅ البوت يعمل بنجاح'))
+  .catch(err => console.error('فشل تشغيل البوت:', err));
 
-    await bot.answerCallbackQuery(callbackQuery.id);
-
-    if (data === 'start_chat') {
-        const points = await getPoints(userId);
-        if (points <= 0) {
-            await bot.sendMessage(
-                chatId,
-                '⚠️ ليس لديك نقاط كافية! اضغط على "جمع نقاط" للحصول على نقاط.',
-                {
-                    reply_markup: {
-                        inline_keyboard: [
-                            [{ text: '🎁 جمع نقاط', callback_data: 'get_referral_link' }]
-                        ]
-                    }
-                }
-            );
-            return;
-        }
-
-        await setSessionActive(userId, true);
-
-        await bot.editMessageReplyMarkup(
-            { inline_keyboard: [] },
-            { chat_id: chatId, message_id: callbackQuery.message.message_id }
-        );
-
-        await bot.sendMessage(
-            chatId,
-            `🤖 <b>بدأت المحادثة!</b>\n\nلديك ${points} نقطة متبقية.\nأرسل رسالتك الآن.`,
-            { ...chatMenu(), parse_mode: 'HTML' }
-        );
-
-        await sendMessageToAI('شخصية خيالية تدعى 😈').catch(() => {});
-    }
-
-    else if (data === 'show_points') {
-        const points = await getPoints(userId);
-        await bot.sendMessage(chatId, `🔢 <b>نقاطك الحالية:</b> ${points}`, { parse_mode: 'HTML' });
-    }
-
-    else if (data === 'get_referral_link') {
-        const link = `https://t.me/${BOT_USERNAME}?start=ref_${userId}`;
-        await bot.sendMessage(
-            chatId,
-            `🎁 <b>رابط جمع النقاط الخاص بك:</b>\n\n${link}\n\nقم بمشاركة الرابط مع أصدقائك، كل شخص يدخل عبر الرابط يمنحك نقطة إضافية (مرة واحدة لكل زائر).`,
-            { parse_mode: 'HTML' }
-        );
-    }
-});
-
-// ======== أمر /start مع الإحالات ========
-bot.onText(/\/start(?: ref_(\d+))?/, async (msg, match) => {
-    const chatId = msg.chat.id;
-    const userId = msg.from.id;
-    const referrerId = match[1] ? parseInt(match[1]) : null;
-
-    if (referrerId && referrerId !== userId) {
-        const already = await hasReferral(referrerId, userId);
-        if (!already) {
-            const success = await recordReferral(referrerId, userId);
-            if (success) {
-                try {
-                    await bot.sendMessage(
-                        referrerId,
-                        `🎉 حصلت على نقطة إضافية! المستخدم @${msg.from.username || userId} دخل عبر رابطك.`
-                    );
-                } catch (e) {}
-                await bot.sendMessage(
-                    chatId,
-                    `🎁 تم منح نقطة لصديقك (@${msg.from.username || userId}) شكراً لدخولك عبر الرابط.`
-                );
-            } else {
-                await bot.sendMessage(chatId, '⚠️ حدث خطأ في منح النقطة، حاول مرة أخرى.');
-            }
-        } else {
-            await bot.sendMessage(chatId, 'ℹ️ سبق لك دخول هذا الرابط، لا يمكن الحصول على نقطة إضافية.');
-        }
-    }
-
-    const points = await getPoints(userId);
-    await bot.sendMessage(
-        chatId,
-        `👋 مرحباً بك في البوت!\n\nلديك ${points} نقطة مجانية.\nأرسل أي رسالة لتبدأ المحادثة.`,
-        mainMenu()
-    );
-});
-
-// ======== أوامر إضافية ========
-bot.onText(/\/reset/, async (msg) => {
-    const chatId = msg.chat.id;
-    const userId = msg.from.id;
-
-    await setSessionActive(userId, false);
-    await resetConversation();
-    await bot.sendMessage(
-        chatId,
-        '🔄 تم إعادة تعيين المحادثة. أرسل أي رسالة لإظهار زر البدء من جديد.'
-    );
-});
-
-bot.onText(/\/points/, async (msg) => {
-    const chatId = msg.chat.id;
-    const userId = msg.from.id;
-    const points = await getPoints(userId);
-    await bot.sendMessage(chatId, `🔢 نقاطك: ${points}`);
-});
-
-bot.onText(/\/help/, async (msg) => {
-    const chatId = msg.chat.id;
-    await bot.sendMessage(
-        chatId,
-        `📖 الأوامر المتاحة:\n/start - إظهار زر البدء\n/reset - إعادة تعيين المحادثة\n/points - عرض نقاطك\n/help - هذه المساعدة\n\n💡 للدعوة: استخدم زر "جمع نقاط" للحصول على رابط.`
-    );
-});
-
-// ======== بدء Polling مع إعادة المحاولة عند 409 ========
-function startBot() {
-    bot.startPolling({
-        params: { timeout: 30 }
-    }).then(() => {
-        console.log('✅ البوت جاهز تماماً.');
-    }).catch((err) => {
-        if (err.message && err.message.includes('409')) {
-            console.warn('⚠️ تعارض في polling (409)، سنحاول مرة أخرى بعد 5 ثوان...');
-            setTimeout(startBot, 5000);
-        } else {
-            console.error('❌ فشل بدء polling:', err.message);
-        }
-    });
-}
-
-startBot();
-
-// معالجة أخطاء الـ polling العامة
-bot.on('polling_error', (error) => {
-    console.error('❌ Polling error:', error.message);
-    if (error.message && error.message.includes('409')) {
-        console.warn('⚠️ تعارض، سنعيد المحاولة...');
-        setTimeout(startBot, 5000);
-    }
-});
+// إيقاف آمن عند انتهاء العملية
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
