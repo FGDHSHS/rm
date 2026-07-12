@@ -1,14 +1,17 @@
 {
   "name": "telegram-ai-bot",
-  "version": "2.0.0",
+  "version": "1.0.0",
+  "description": "بوت تيليجرام مع ذكاء اصطناعي ونظام نقاط وإحالات",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "telegraf": "^4.12.2",
-    "sql.js": "^1.10.0",
-    "axios": "^1.6.2",
-    "dotenv": "^16.3.1"
-  }
+    "axios": "^1.6.0",
+    "better-sqlite3": "^9.0.0",
+    "dotenv": "^16.3.1",
+    "node-telegram-bot-api": "^0.64.0"
+  },
+  "author": "",
+  "license": "ISC"
 }
