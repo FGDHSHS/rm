@@ -1,63 +1,249 @@
-require('dotenv').config(); // اختياري، يمكنك حذف هذا السطر إذا لم تستخدم .env
-const TelegramBot = require('node-telegram-bot-api');
+// استيراد المكتبات
+const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
-const Database = require('better-sqlite3');
+const { LowSync, JSONFileSync } = require('lowdb');
+const path = require('path');
 
-// ---------- الإعدادات ----------
-const BOT_TOKEN = '7801607857:AAGMzMe7ioctkDQJxxAVydtsUzf0ZXtiBxI'; // استخدم التوكن الخاص بك
+// ==========================================
+// 1. إعداد قاعدة البيانات (LowDB)
+// ==========================================
+const dbFile = path.join(__dirname, 'db.json');
+const adapter = new JSONFileSync(dbFile);
+const db = new LowSync(adapter);
+
+db.read();
+if (!db.data) {
+  db.data = { users: {} };
+  db.write();
+}
+
+function getUser(userId) {
+  const id = String(userId);
+  if (!db.data.users[id]) {
+    db.data.users[id] = {
+      points: 7,                // 7 نقاط مجانية
+      isActive: false,
+      referredBy: null,
+      referredUsers: [],        // قائمة بمن قام بدعوتهم
+    };
+    db.write();
+  }
+  return db.data.users[id];
+}
+
+function saveUser(userId, data) {
+  db.data.users[String(userId)] = data;
+  db.write();
+}
+
+// ==========================================
+// 2. إعداد البوت (مع التوكن المقدم)
+// ==========================================
+const BOT_TOKEN = '7801607857:AAGMzMe7ioctkDQJxxAVydtsUzf0ZXtiBxI'; // ضع توكنك هنا
+const bot = new Telegraf(BOT_TOKEN);
+
+// ==========================================
+// 3. إعداد الذكاء الاصطناعي (API)
+// ==========================================
 const AI_BASE_URL = 'https://dsfsdjfc-ddd.hf.space';
 const AI_API_KEY = 'my_secret_key_123';
 
-// ---------- قاعدة البيانات ----------
-const db = new Database('bot_data.db');
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    points INTEGER DEFAULT 0,
-    referred_by INTEGER DEFAULT NULL,
-    chat_active INTEGER DEFAULT 0,
-    control_msg_id INTEGER DEFAULT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )
-`);
-
-// دوال مساعدة للتعامل مع قاعدة البيانات
-function getUser(userId) {
-  return db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
+async function sendToAI(message) {
+  try {
+    const response = await axios.post(
+      `${AI_BASE_URL}/chat`,
+      { message },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': AI_API_KEY,
+        },
+        timeout: 30000,
+      }
+    );
+    return response.data.reply || '';
+  } catch (error) {
+    console.error('AI error:', error.message);
+    return null;
+  }
 }
 
-function createUser(userId, referredBy = null) {
-  const stmt = db.prepare(`
-    INSERT INTO users (user_id, points, referred_by, chat_active)
-    VALUES (?, 7, ?, 0)
-  `);
-  stmt.run(userId, referredBy);
-  return getUser(userId);
+async function resetAI() {
+  try {
+    await axios.post(`${AI_BASE_URL}/reset`, null, {
+      headers: { 'X-API-Key': AI_API_KEY },
+    });
+  } catch (e) {}
 }
 
-function updatePoints(userId, delta) {
-  const stmt = db.prepare('UPDATE users SET points = points + ? WHERE user_id = ?');
-  stmt.run(delta, userId);
+// ==========================================
+// 4. دوال الإحالة (باستخدام @kr_x20bot)
+// ==========================================
+function getReferralLink(userId) {
+  // نستخدم اسم البوت الثابت كما هو مطلوب
+  return `https://t.me/kr_x20bot?start=ref_${userId}`;
 }
 
-function setChatActive(userId, active) {
-  const stmt = db.prepare('UPDATE users SET chat_active = ? WHERE user_id = ?');
-  stmt.run(active ? 1 : 0, userId);
-}
+// ==========================================
+// 5. أمر /start
+// ==========================================
+bot.start(async (ctx) => {
+  const userId = ctx.from.id;
+  const payload = ctx.startPayload; // مثلاً ref_123456
 
-function setControlMsgId(userId, msgId) {
-  const stmt = db.prepare('UPDATE users SET control_msg_id = ? WHERE user_id = ?');
-  stmt.run(msgId, userId);
-}
+  // معالجة الإحالة
+  if (payload && payload.startsWith('ref_')) {
+    const referrerId = payload.replace('ref_', '');
+    if (referrerId !== String(userId)) {
+      // التحقق من أن المستخدم جديد (لم يسبق له الدخول)
+      const isNewUser = !db.data.users[String(userId)];
+      if (isNewUser) {
+        const referrerData = getUser(referrerId);
+        if (referrerData && !referrerData.referredUsers.includes(String(userId))) {
+          // إضافة نقطة للداعي
+          referrerData.points += 1;
+          referrerData.referredUsers.push(String(userId));
+          saveUser(referrerId, referrerData);
 
-function getControlMsgId(userId) {
-  const row = db.prepare('SELECT control_msg_id FROM users WHERE user_id = ?').get(userId);
-  return row ? row.control_msg_id : null;
-}
+          // إشعار للداعي
+          try {
+            await bot.telegram.sendMessage(
+              referrerId,
+              '🎉 لقد دخل مستخدم جديد عبر رابطك، وتمت إضافة نقطة واحدة إلى رصيدك.'
+            );
+          } catch (e) {}
 
-function isFirstStart(userId) {
-  return db.prepare('SELECT COUNT(*) as count FROM users WHERE user_id = ?').get(userId).count === 0;
-}
+          // إشعار للمستخدم الجديد
+          try {
+            await ctx.reply('✅ تم تسجيلك عبر رابط صديقك، وقد حصل صديقك على نقطة مكافأة.');
+          } catch (e) {}
+        }
+        // تسجيل أن هذا المستخدم تمت إحالته
+        const newUser = getUser(userId);
+        newUser.referredBy = referrerId;
+        saveUser(userId, newUser);
+      }
+    }
+  }
 
-// ---------- الاتصال بالذكاء الاصطناعي ----------
+  // الآن ننشئ المستخدم (إن لم يكن موجوداً) ونعطيه 7 نقاط
+  const userData = getUser(userId);
+
+  // عرض الترحيب مع زر التفعيل
+  await ctx.reply(
+    `👋 مرحباً بك في البوت!\nيمكنك التحدث مع الذكاء الاصطناعي بعد الضغط على الزر أدناه.`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback('🗣️ التحدث مع الذكاء الاصطناعي', 'activate_chat')],
+    ])
+  );
+});
+
+// ==========================================
+// 6. زر تفعيل المحادثة
+// ==========================================
+bot.action('activate_chat', async (ctx) => {
+  const userId = ctx.from.id;
+  const userData = getUser(userId);
+  userData.isActive = true;
+  saveUser(userId, userData);
+
+  await ctx.answerCbQuery('✅ تم التفعيل!');
+  await ctx.editMessageText(
+    `✅ تم تفعيل وضع المحادثة مع الذكاء الاصطناعي.\nأرسل أي رسالة للبدء.`,
+    Markup.inlineKeyboard([
+      [
+        Markup.button.callback(`⭐ النقاط: ${userData.points}`, 'show_points'),
+        Markup.button.callback('💰 جمع نقاط', 'collect_points'),
+      ],
+    ])
+  );
+});
+
+// ==========================================
+// 7. أزرار النقاط والإحالة
+// ==========================================
+bot.action('show_points', async (ctx) => {
+  const userId = ctx.from.id;
+  const userData = getUser(userId);
+  await ctx.answerCbQuery(`رصيدك الحالي: ${userData.points} نقطة`, true);
+});
+
+bot.action('collect_points', async (ctx) => {
+  const userId = ctx.from.id;
+  const link = getReferralLink(userId);
+  await ctx.answerCbQuery('تم إنشاء رابط الإحالة!');
+  await ctx.reply(
+    `🔗 شارك هذا الرابط مع أصدقائك:\n${link}\n\nعندما يدخل شخص جديد عبر رابطك ويستخدم البوت لأول مرة، ستحصل على نقطة واحدة.`,
+    { disable_web_page_preview: true }
+  );
+});
+
+// ==========================================
+// 8. معالجة الرسائل النصية (المحادثة)
+// ==========================================
+bot.on('text', async (ctx) => {
+  const userId = ctx.from.id;
+  const userData = getUser(userId);
+
+  if (!userData.isActive) {
+    await ctx.reply(
+      '⚠️ يرجى الضغط على زر "التحدث مع الذكاء الاصطناعي" أولاً.',
+      Markup.inlineKeyboard([
+        [Markup.button.callback('🗣️ التحدث مع الذكاء الاصطناعي', 'activate_chat')],
+      ])
+    );
+    return;
+  }
+
+  // التحقق من النقاط
+  if (userData.points <= 0) {
+    await ctx.reply(
+      '⚠️ رصيد النقاط لديك 0، لا يمكنك إرسال رسائل.\nاستخدم زر "جمع نقاط" للحصول على نقاط جديدة.',
+      Markup.inlineKeyboard([
+        [Markup.button.callback('💰 جمع نقاط', 'collect_points')],
+      ])
+    );
+    return;
+  }
+
+  // خصم نقطة
+  userData.points -= 1;
+  saveUser(userId, userData);
+
+  // إظهار مؤشر الكتابة
+  await ctx.sendChatAction('typing');
+
+  // إرسال إلى الذكاء الاصطناعي
+  const aiReply = await sendToAI(ctx.message.text);
+
+  if (aiReply === null) {
+    // في حال الخطأ نعيد النقطة
+    userData.points += 1;
+    saveUser(userId, userData);
+    await ctx.reply('❌ حدث خطأ في الاتصال بالذكاء الاصطناعي، حاول مجدداً.');
+    return;
+  }
+
+  // إرسال الرد مع الأزرار المحدثة
+  await ctx.reply(
+    aiReply,
+    Markup.inlineKeyboard([
+      [
+        Markup.button.callback(`⭐ النقاط: ${userData.points}`, 'show_points'),
+        Markup.button.callback('💰 جمع نقاط', 'collect_points'),
+      ],
+    ])
+  );
+});
+
+// ==========================================
+// 9. تشغيل البوت
+// ==========================================
+resetAI().catch(() => {});
+bot.launch().then(() => {
+  console.log('✅ البوت يعمل...');
+});
+
+// إيقاف آمن
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
