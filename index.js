@@ -1,7 +1,8 @@
 require('dotenv').config();
 const { Telegraf, Markup } = require('telegraf');
-const Database = require('better-sqlite3');
+const initSqlJs = require('sql.js');
 const axios = require('axios');
+const fs = require('fs');
 
 // ===================== إعدادات البوت والذكاء الاصطناعي =====================
 const BOT_TOKEN = process.env.b || 'YOUR_BOT_TOKEN_HERE';
@@ -10,38 +11,82 @@ const AI_API_KEY = process.env.a || "my_secret_key_123";
 
 const bot = new Telegraf(BOT_TOKEN);
 
-// ===================== قاعدة البيانات =====================
-const db = new Database('bot_data.db');
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
+// ===================== قاعدة البيانات (sql.js) =====================
+let db;
+
+async function initDatabase() {
+  const SQL = await initSqlJs();
+  
+  // نحاول تحميل قاعدة بيانات موجودة أو إنشاء جديدة
+  if (fs.existsSync('bot_data.sqlite')) {
+    const buffer = fs.readFileSync('bot_data.sqlite');
+    db = new SQL.Database(buffer);
+  } else {
+    db = new SQL.Database();
+  }
+
+  // إنشاء الجداول
+  db.run(`CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
     points INTEGER DEFAULT 7,
     referred_by INTEGER,
     joined_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-  CREATE TABLE IF NOT EXISTS referrals (
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS referrals (
     referrer_id INTEGER,
     referred_user_id INTEGER UNIQUE,
     claimed BOOLEAN DEFAULT 0,
     PRIMARY KEY (referrer_id, referred_user_id)
-  );
-`);
+  )`);
+
+  // حفظ التغييرات الأولية
+  saveDatabase();
+}
+
+function saveDatabase() {
+  const data = db.export();
+  fs.writeFileSync('bot_data.sqlite', Buffer.from(data));
+}
 
 // دوال قاعدة البيانات المساعدة
-const getUser = (userId) => db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
-const createUser = (userId, referredBy = null) => {
-  db.prepare('INSERT OR IGNORE INTO users (user_id, points, referred_by) VALUES (?, 7, ?)').run(userId, referredBy);
+function getUser(userId) {
+  const stmt = db.prepare('SELECT * FROM users WHERE user_id = ?');
+  stmt.bind([userId]);
+  if (stmt.step()) {
+    const row = stmt.getAsObject();
+    stmt.free();
+    return row;
+  }
+  stmt.free();
+  return null;
+}
+
+function createUser(userId, referredBy = null) {
+  db.run('INSERT OR IGNORE INTO users (user_id, points, referred_by) VALUES (?, 7, ?)', [userId, referredBy]);
+  saveDatabase();
   return getUser(userId);
-};
-const updatePoints = (userId, delta) => {
-  db.prepare('UPDATE users SET points = points + ? WHERE user_id = ?').run(delta, userId);
-};
-const claimReferral = (referrerId, referredUserId) => {
-  const exists = db.prepare('SELECT * FROM referrals WHERE referrer_id = ? AND referred_user_id = ?').get(referrerId, referredUserId);
-  if (exists) return false;
-  db.prepare('INSERT INTO referrals (referrer_id, referred_user_id, claimed) VALUES (?, ?, 1)').run(referrerId, referredUserId);
+}
+
+function updatePoints(userId, delta) {
+  db.run('UPDATE users SET points = points + ? WHERE user_id = ?', [delta, userId]);
+  saveDatabase();
+}
+
+function claimReferral(referrerId, referredUserId) {
+  // تحقق مما إذا كان مسجلاً سابقاً
+  const check = db.prepare('SELECT * FROM referrals WHERE referrer_id = ? AND referred_user_id = ?');
+  check.bind([referrerId, referredUserId]);
+  if (check.step()) {
+    check.free();
+    return false;
+  }
+  check.free();
+  
+  db.run('INSERT INTO referrals (referrer_id, referred_user_id, claimed) VALUES (?, ?, 1)', [referrerId, referredUserId]);
+  saveDatabase();
   return true;
-};
+}
 
 // ===================== أوامر البوت =====================
 
@@ -173,10 +218,21 @@ bot.on('text', async (ctx) => {
 });
 
 // ===================== تشغيل البوت =====================
-bot.launch()
-  .then(() => console.log('✅ البوت يعمل بنجاح'))
-  .catch(err => console.error('فشل تشغيل البوت:', err));
+(async () => {
+  await initDatabase();
+  console.log('✅ قاعدة البيانات جاهزة');
+  
+  bot.launch()
+    .then(() => console.log('✅ البوت يعمل بنجاح'))
+    .catch(err => console.error('فشل تشغيل البوت:', err));
+})();
 
 // إيقاف آمن عند انتهاء العملية
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+process.once('SIGINT', () => {
+  saveDatabase();
+  bot.stop('SIGINT');
+});
+process.once('SIGTERM', () => {
+  saveDatabase();
+  bot.stop('SIGTERM');
+});
